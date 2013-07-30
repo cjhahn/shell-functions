@@ -1,105 +1,219 @@
-# work-in-progress utility functions
+#work-in-progress internal functions
 
-function u:find() {
-    declare -i c=
-    for ((c=2; c < $#; ++c)); do
-        [[ "${1:?needle argument missing}" = "${!c}" ]] \
-            && return $((c-1))
+#set -u
+type u:mtime &>/dev/null || source /home/cjhahn/.bashrc-u
+
+typeset -p I_SOURCED_FILES &>/dev/null \
+    || declare -A I_SOURCED_FILES
+
+((${I_SOURCED_FILES["x$BASH_SOURCE"]:-0} < $(u:mtime "$BASH_SOURCE"))) \
+    || return 0
+
+#public
+#don't use I_<var> names.
+# source internal
+# i:source lib1 lib2 lib3
+# function doathing() {
+#   declare usage_statement="%s [-$i_opt] -o optarg arg"
+#   $i_base
+#   while i:getopts 'o' OPT; do
+#     case "$OPT" in
+#       o) do_something ;;
+#       *) i:usage; return ;;
+#     esac
+#   done
+#
+#   i:emit "Important message on stdout."
+#   i:warn "About to do something dangerous."
+#   declare answer=
+#   i:prompt "Say something." answer
+#   i:verbose "$answer to you too."
+#
+#   if i:confirm n "Are you sure you want to do something dangerous?"; then
+#     i:run dangerous_cmd || i:error "dangerous_cmd failed." || return
+#     i:dryrun && i:verbose "Just kidding!"
+#   fi
+#   i:dryrun safe_cmd || i:fatal "safe_cmd failed." || return
+#   i:dryrun && semisafe_cmd --dryrun
+
+i_opt='dhnvy'
+i_base='eval declare OPTIND=1 OPTARG= OPTERR= OPT= I_DEBUG=${I_DEBUG:-} I_DRYRUN=${I_DRYRUN:-} I_FORCE=${I_FORCE:-} I_OVERRIDE_DRYRUN=${I_OVERRIDE_DRYRUN:-} I_VERBOSE=${I_VERBOSE:-}'
+
+function i:source() {
+    # sourcing libraries that expect to declare globals with 'declare' won't work,
+    # since declare will make local variables if called from within a function.
+    declare mtime=
+    for file in "$@"; do
+        mtime="$(u:mtime "$file")"
+        [[ ! "${I_SOURCED_FILES["x$file"]:-}" \
+                || "$mtime" -gt "${I_SOURCED_FILES["x$file"]}" \
+            ]] \
+            && source "$file" \
+            && I_SOURCED_FILES["x$file"]="$mtime"
     done
-    return 0
 }
 
-function u:join() { v:join '' "$@"; }
+#i:usage -> printf(stderr, "usage: $usage_statement", caller*) -> 1
+function i:usage() {
+    (($#)) && i:i:emit 1 '' "$@"
+    i:i:usage 1
+} >&2
 
-function u:mtime() { stat -c '%Y' "$@"; }
+#i:getopts optstring "$@" -> see getopts, where <name> is OPT
+# provides support for library standard vars/opts.
+function i:getopts() {
+    while getopts ":$1$i_opt" OPT "${@:2}"; do
+        case "$OPT" in
+            d) I_DEBUG=1 ;;
+            h) return 0 ;;
+            n) I_DRYRUN=1 ;;
+            v) I_VERBOSE=1 ;;
+            y) I_FORCE=1 ;;
+            :) i:i:emit 1 error "Option $OPTARG requires an argument." ;;&
+            \?) [[ "$OPTARG" = - ]] && break
+                 [[ "$OPTARG" ]] \
+                     && i:i:emit 1 error "Illegal option: $OPTARG" ;;&
+            *) return 0 ;;
+        esac
+    done
+    return 1
+} >&2
 
-function u:common-prefix() { v:common-prefix '' "$@"; }
+#i:run cmd "arg 1" "arg 2" -> run cmd w/args unless i:dryrun
+function i:run() { i:i:run 1 "$@"; }
 
-function u:has-common-prefix() {
-    declare junk=
-    v:common-prefix junk "$@"
+#i:debug -> return 0|1
+#i:debug "msg 1" ... -> stdout << "func: [debug] msg"
+function i:debug() {
+    (($#)) && i:debug && i:i:emit 1 debug "$@" >&2
+    ((I_DEBUG))
 }
 
-function u:abs-path() { v:abs-path '' "$@"; }
-
-function _complete::generic_filter () {
-    COMPREPLY=( $(compgen -W "$(
-                    _complete::"${1:?subject argument missing}" "$@"
-                )" "$2") )
-
-    [[ ${#COMPREPLY[*]} -eq 1 ]] \
-        && COMPREPLY+=(
-            $(compgen -W "$(
-                        _complete::"$1" "$1" "$COMPREPLY"
-                    )" "$COMPREPLY") )
+#i:verbose -> return 0|1
+#i:verbose "msg 1" ... -> stdout << "func: [verbose] msg"
+function i:verbose() {
+    (($#)) && i:verbose && i:i:emit 1 verbose "$@"
+    ((I_VERBOSE))
 }
 
+#i:warn "msg 1" ... -> stderr << "func: [warn] msg"
+function i:warn() { i:i:emit 1 warn "$@"; } >&2
 
-# work-in-progress utility functions that assign to supplied names
-# subshells never happen here
-# first arg is always name, but optional: if null, value is printed instead.
+#i:error "msg 1" ... -> stderr << "func: [error] msg" -> $?
+function i:error() {
+    declare rc=$?
+    i:i:emit 1 error "$@"
+    return $rc
+} >&2
 
+#i:force -> 0|1
+function i:force() { ((I_FORCE)); }
 
-#v:print name [val ...] -> v:printf name '%s\n' val ...
-# except \n is not included when name is supplied
-function v:print() {
-    v:printf "${1:-}" '%s' "${@:2}"
-    [[ "$1" ]] || echo
+#i:fatal "msg 1" ... -> stderr << "func: [fatal] msg" -> 255
+function i:fatal() {
+    i:i:emit 1 fatal "$@"
+    return 255
+} >&2
+
+#i:emit "msg 1" ... -> stdout << "func: msg"
+function i:emit() { i:i:emit 1 '' "$@"; }
+
+#i:dryrun -> return 0|1
+#i:dryrun cmd "arg 1" -> run despite dryrun
+function i:dryrun() {
+    if (($#)); then I_OVERRIDE_DRYRUN=1 i:i:run 1 "$@"
+    else ((I_DRYRUN))
+    fi
 }
 
-#v:printf name [fmt [val ...]] -> see bash printf
-function v:printf() {
-    printf ${1:+-v "$1"} -- "${@:2}"
-}
+#i:prompt "text" [read options]
+function i:prompt() { i:i:prompt 1 "$@"; }
 
-#v:join name delim [item ...] -> item(s) joined by delim
-function v:join() {
-    (($# > 2)) || return 0
-    # can't slice and sub, so waste $3, $4 and just sub
-    set -- "$1" "$2" "${@/#/$2}"
-    v:printf "$1" '%s' "${5#$2}" "${@:6}"
-    return 0
-}
+#i:confirm y|n|'' "text"
+# repeatedly prompt with "text" until an answer [yYnN] is given.
+# first arg is default answer.
+function i:confirm() {
+    declare default_answer="$1" \
+        prompt="${2:?prompt argument missing}"
+    declare answers_prompt="[y/n]" \
+        answer=
+    answers_prompt="${answers_prompt/$1/${1^^}}"
 
-#v:common-prefix name [item ...] -> string prefix common to all item(s)
-# returns true if a common prefix was found, false otherwise
-function v:common-prefix() {
-    # we start with second arg as prefix, then loop backward through args.
-    while (($# > 2 && ${#2} > 0)); do
-        # while the last arg's prefix doesn't match ours, ...
-        while [[ "${!#:0:${#2}}" != "$2" ]]; do
-            # ... shrink our prefix by one char.
-            set -- "$1" "${2:0:${#2}-1}" "${@:3}"
-        done
-        set -- "${@:1:$#-1}"  # pop
+    if i:force && i:dryrun; then
+        [[ "$default_answer" ]] && answer="${1,,}"
+    else
+        i:force && answer=y
+        i:dryrun && answer=n
+    fi
+
+    while [[ "${answer,,}" != [yn] ]]; do
+        i:i:prompt 1 "$prompt $answers_prompt" \
+            -n 1 -i "$default_answer" answer
+        echo
     done
 
-    v:print "${1:-}" "${2:-}"
-    ((${#2} > 0))
+    [[ "$answer" == y ]]
 }
 
-#v:abs-path name path -> absolute path
-function v:abs-path() {
-    set -- "${1:-}" "${2:-}"
-    # if relative, make absolute first
-    [[ "$2" == /* ]] || set -- "$1" "$PWD/$2"
-    # make it easy to assume
-    set -- "$1" "$2/"
 
-    # remove all references to . so as to not confuse ..
-    set -- "$1" "${2//\/.\///}"
-    set -- "$1" "${2//\/.\///}"
-    # remove all references to ..
-    while [[ "$2" == */../* ]]; do
-        # add leading /. for each removal, just to make sure there's always
-        # more to back up to
-        set -- "$1" "/.${2/\/+([^\/])\/..\///}"
-    done
-    # remove all references to . again, because we probably added some.
-    set -- "$1" "${2//\/.\///}"
-    set -- "$1" "${2//\/.\///}"
-    # remove all trailing /
-    set -- "$1" "${2/%+(\/)}"
-    # collapse //
-    v:print "$1" "${2//+(\/)//}"
+
+#internal:internal - best not to use these directly
+# all take first arg <skip>, which is how many elements in the call chain
+# (starting with direct caller) to skip when reporting which function called it.
+
+: \
+    ${I_LOADED:=1} \
+    ${I_DEBUG:=} \
+    ${I_DRYRUN:=} \
+    ${I_FORCE:=} \
+    ${I_OVERRIDE_DRYRUN:=} \
+    ${I_VERBOSE:=}
+
+
+#i:i:emit <skip> <level> "msg 1" ...
+function i:i:emit() {
+    declare prefix= msg=
+    : "${1:?skip agument missing}" "${2:?level argument missing}"
+    (($# > 2)) || return 1
+
+    declare prefix="${FUNCNAME[$1+1]}:${2:+ [$2]}"
+    printf "${prefix//%/%%} %s\n" "${@:3}"
+}
+
+
+#i:i:run <skip> cmd "arg 1" ...
+function i:i:run() {
+    if i:debug || { i:dryrun && ! ((I_OVERRIDE_DRYRUN)); }; then
+        declare o= level=debug
+        printf -v o ' %q' "${@:2}"
+
+        i:debug || level=dryrun
+        i:i:emit $((${1?:skip argument missing}+1)) "$level" "run:$o" >&2
+    fi
+
+    if ! i:dryrun || ((I_OVERRIDE_DRYRUN)); then
+        I_OVERRIDE_DRYRUN= ${2:?cmd argument missing} "${@:3}"
+    fi
+}
+
+
+#i:i:prompt <skip> "text" [read options]
+function i:i:prompt() { read -p "${FUNCNAME[${1:?argument missing}+1]}: ${2:?argument missing} " "${@:3}"; }
+
+
+function i:i:usage() {
+    declare usage_statement="${usage_statement:-%s [-$i_opts]}"
+    printf "usage:
+  $usage_statement
+
+Standard options:
+    -d  Debug output.
+    -h  Usage.
+    -n  Dry run (+ no to all prompts).
+    -y  Force (yes to all prompts).
+    -v  Be verbose.
+
+  Pass both -n and -y to answer all prompts with default, if available.
+" "${FUNCNAME[$1+1]}" >&2
+    return 1
 }
