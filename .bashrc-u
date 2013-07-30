@@ -1,0 +1,105 @@
+# work-in-progress utility functions
+
+function u:find() {
+    declare -i c=
+    for ((c=2; c < $#; ++c)); do
+        [[ "${1:?needle argument missing}" = "${!c}" ]] \
+            && return $((c-1))
+    done
+    return 0
+}
+
+function u:join() { v:join '' "$@"; }
+
+function u:mtime() { stat -c '%Y' "$@"; }
+
+function u:common-prefix() { v:common-prefix '' "$@"; }
+
+function u:has-common-prefix() {
+    declare junk=
+    v:common-prefix junk "$@"
+}
+
+function u:abs-path() { v:abs-path '' "$@"; }
+
+function _complete::generic_filter () {
+    COMPREPLY=( $(compgen -W "$(
+                    _complete::"${1:?subject argument missing}" "$@"
+                )" "$2") )
+
+    [[ ${#COMPREPLY[*]} -eq 1 ]] \
+        && COMPREPLY+=(
+            $(compgen -W "$(
+                        _complete::"$1" "$1" "$COMPREPLY"
+                    )" "$COMPREPLY") )
+}
+
+
+# work-in-progress utility functions that assign to supplied names
+# subshells never happen here
+# first arg is always name, but optional: if null, value is printed instead.
+
+
+#v:print name [val ...] -> v:printf name '%s\n' val ...
+# except \n is not included when name is supplied
+function v:print() {
+    v:printf "${1:-}" '%s' "${@:2}"
+    [[ "$1" ]] || echo
+}
+
+#v:printf name [fmt [val ...]] -> see bash printf
+function v:printf() {
+    printf ${1:+-v "$1"} -- "${@:2}"
+}
+
+#v:join name delim [item ...] -> item(s) joined by delim
+function v:join() {
+    (($# > 2)) || return 0
+    # can't slice and sub, so waste $3, $4 and just sub
+    set -- "$1" "$2" "${@/#/$2}"
+    v:printf "$1" '%s' "${5#$2}" "${@:6}"
+    return 0
+}
+
+#v:common-prefix name [item ...] -> string prefix common to all item(s)
+# returns true if a common prefix was found, false otherwise
+function v:common-prefix() {
+    # we start with second arg as prefix, then loop backward through args.
+    while (($# > 2 && ${#2} > 0)); do
+        # while the last arg's prefix doesn't match ours, ...
+        while [[ "${!#:0:${#2}}" != "$2" ]]; do
+            # ... shrink our prefix by one char.
+            set -- "$1" "${2:0:${#2}-1}" "${@:3}"
+        done
+        set -- "${@:1:$#-1}"  # pop
+    done
+
+    v:print "${1:-}" "${2:-}"
+    ((${#2} > 0))
+}
+
+#v:abs-path name path -> absolute path
+function v:abs-path() {
+    set -- "${1:-}" "${2:-}"
+    # if relative, make absolute first
+    [[ "$2" == /* ]] || set -- "$1" "$PWD/$2"
+    # make it easy to assume
+    set -- "$1" "$2/"
+
+    # remove all references to . so as to not confuse ..
+    set -- "$1" "${2//\/.\///}"
+    set -- "$1" "${2//\/.\///}"
+    # remove all references to ..
+    while [[ "$2" == */../* ]]; do
+        # add leading /. for each removal, just to make sure there's always
+        # more to back up to
+        set -- "$1" "/.${2/\/+([^\/])\/..\///}"
+    done
+    # remove all references to . again, because we probably added some.
+    set -- "$1" "${2//\/.\///}"
+    set -- "$1" "${2//\/.\///}"
+    # remove all trailing /
+    set -- "$1" "${2/%+(\/)}"
+    # collapse //
+    v:print "$1" "${2//+(\/)//}"
+}
