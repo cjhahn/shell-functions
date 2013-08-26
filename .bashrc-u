@@ -2,7 +2,7 @@
 
 function u:find() {
     declare -i c=
-    for ((c=2; c < $#; ++c)); do
+    for ((c=2; c <= $#; ++c)); do
         [[ "${1:?needle argument missing}" = "${!c}" ]] \
             && return $((c-1))
     done
